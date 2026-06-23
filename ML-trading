@@ -1,0 +1,139 @@
+library(quantmod)
+library(TTR)
+library(dplyr)
+library(caret)
+library(randomForest)
+library(xgboost)
+library(pROC)
+
+
+ticker <- "MSFT"
+
+getSymbols(ticker, src = "yahoo", from = "2018-01-01")
+
+data_xts <- get(ticker)
+
+close <- Cl(data_xts)
+volume <- Vo(data_xts)
+
+
+ret <- dailyReturn(close, type = "log")
+rsi <- RSI(close, n = 14)
+
+macd_obj <- MACD(close)
+macd <- macd_obj$macd
+signal <- macd_obj$signal
+
+ma10 <- SMA(close, 10)
+ma50 <- SMA(close, 50)
+
+volatility <- runSD(close, 10)
+
+
+data_all <- na.omit(merge(
+  close,
+  volume,
+  ret,
+  rsi,
+  macd,
+  signal,
+  ma10,
+  ma50,
+  volatility
+))
+
+colnames(data_all) <- c(
+  "close", "volume", "return", "rsi",
+  "macd", "signal", "ma10", "ma50", "volatility"
+)
+
+df <- data.frame(date = index(data_all), coredata(data_all))
+
+# Target: next-day direction
+df$target <- ifelse(lead(df$close) > df$close, 1, 0)
+
+df <- na.omit(df)
+df$target <- as.factor(df$target)
+
+
+
+set.seed(123)
+
+train_index <- createDataPartition(df$target, p = 0.8, list = FALSE)
+
+train <- df[train_index, ]
+test <- df[-train_index, ]
+
+
+
+train_matrix <- model.matrix(
+  ~ rsi + macd + signal + ma10 + ma50 + volatility,
+  train
+)[, -1]
+
+test_matrix <- model.matrix(
+  ~ rsi + macd + signal + ma10 + ma50 + volatility,
+  test
+)[, -1]
+
+train_label <- as.numeric(train$target) - 1
+test_label <- as.numeric(test$target) - 1
+
+
+dtrain <- xgb.DMatrix(data = train_matrix, label = train_label)
+dtest  <- xgb.DMatrix(data = test_matrix, label = test_label)
+
+params <- list(
+  objective = "binary:logistic",
+  eval_metric = "logloss"
+)
+
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 150,
+  verbose = 0
+)
+
+xgb_prob <- predict(xgb_model, dtest)
+
+xgb_pred <- ifelse(xgb_prob > 0.5, 1, 0)
+
+
+cm <- confusionMatrix(
+  as.factor(xgb_pred),
+  as.factor(test_label)
+)
+
+print(cm)
+
+
+roc_obj <- roc(test_label, xgb_prob)
+
+plot(roc_obj, main = "XGBoost ROC Curve")
+
+auc_value <- auc(roc_obj)
+print(paste("AUC:", auc_value))
+
+
+test$prediction <- xgb_pred
+
+test$return <- c(NA, diff(log(test$close)))
+
+strategy_return <- ifelse(
+  test$prediction == 1,
+  test$return,
+  0
+)
+
+strategy_return <- na.omit(strategy_return)
+
+cumulative_return <- cumsum(strategy_return)
+
+plot(
+  cumulative_return,
+  type = "l",
+  col = "blue",
+  main = "ML Trading Strategy Performance",
+  ylab = "Cumulative Return"
+)
