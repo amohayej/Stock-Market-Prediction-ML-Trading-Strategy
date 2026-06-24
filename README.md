@@ -19,3 +19,8 @@ Evaluation:
 Computes confusion matrix and ROC curve.
 Reports AUC = 0.52985492373, indicating modest predictive power.
 Simulates trading performance based on model predictions
+</> Markdown
+
+![ROC Curve](roc_curve.png)
+
+![Strategy Performance](strategy_performance.png)
